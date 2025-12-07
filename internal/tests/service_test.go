@@ -4,55 +4,121 @@ import (
 	"context"
 	"testing"
 
+	"tracktrades/internal/adapters/storage"
 	"tracktrades/internal/app"
 	"tracktrades/internal/domain/portfolio"
 	"tracktrades/internal/ports"
 )
-
-type memRepo struct {
-	p *portfolio.Portfolio
-}
-
-func (m *memRepo) Load(ctx context.Context) (*portfolio.Portfolio, error) {
-	if m.p == nil {
-		m.p = portfolio.New("Test", 1000)
-	}
-	return m.p, nil
-}
-
-func (m *memRepo) Save(ctx context.Context, p *portfolio.Portfolio) error {
-	m.p = p
-	return nil
-}
 
 type nopPricer struct{}
 
 func (nopPricer) UpdatePrice(ctx context.Context, p *portfolio.Position) error           { return nil }
 func (nopPricer) ComputeHistoricalPeak(ctx context.Context, p *portfolio.Position) error { return nil }
 
-var _ ports.PortfolioRepository = (*memRepo)(nil)
-var _ ports.PriceProvider = (*nopPricer)(nil)
+type bumpPricer struct{}
 
-func TestServiceAddPosition(t *testing.T) {
-	repo := &memRepo{}
-	svc := app.NewPortfolioService(repo, nopPricer{})
+func (bumpPricer) UpdatePrice(ctx context.Context, p *portfolio.Position) error {
+	p.CurrentPrice += 1
+	return nil
+}
+
+func (bumpPricer) ComputeHistoricalPeak(ctx context.Context, p *portfolio.Position) error {
+	if p.CurrentPrice > p.PeakPrice {
+		p.PeakPrice = p.CurrentPrice
+	}
+	return nil
+}
+
+var _ ports.PriceProvider = (*nopPricer)(nil)
+var _ ports.PriceProvider = (*bumpPricer)(nil)
+
+func TestServiceAddAndPersistPosition(t *testing.T) {
+	repoInfo, err := storage.NewPortfolioRepository("memory")
+	if err != nil {
+		t.Fatalf("NewPortfolioRepository memory: %v", err)
+	}
+
+	svc := app.NewPortfolioService(repoInfo.Repository, nopPricer{})
 
 	ctx := context.Background()
-	pos := &portfolio.Position{
-		Ticker:       "NVDA",
-		Shares:       10,
-		CostBasis:    1000,
-		CurrentPrice: 120,
-	}
-	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
-		t.Fatalf("AddOrUpdatePosition error: %v", err)
+	if _, err := svc.InitPortfolio(ctx, "Test", 500); err != nil {
+		t.Fatalf("InitPortfolio: %v", err)
 	}
 
-	m, err := svc.GetMetrics(ctx)
-	if err != nil {
-		t.Fatalf("GetMetrics error: %v", err)
+	pos := &portfolio.Position{
+		Ticker:       "NVDA",
+		Shares:       2,
+		CostBasis:    200,
+		CurrentPrice: 110,
 	}
-	if m.TotalValue <= 0 {
-		t.Fatalf("TotalValue = %v, want >0", m.TotalValue)
+	pos.UpdatePrice(pos.CurrentPrice)
+
+	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
+		t.Fatalf("AddOrUpdatePosition: %v", err)
+	}
+
+	metrics, err := svc.GetMetrics(ctx)
+	if err != nil {
+		t.Fatalf("GetMetrics: %v", err)
+	}
+
+	wantTotal := 500.0 + (2 * 110)
+	if metrics.TotalValue != wantTotal {
+		t.Fatalf("TotalValue=%v want %v", metrics.TotalValue, wantTotal)
+	}
+
+	detail, ok, err := svc.GetPosition(ctx, "NVDA")
+	if err != nil {
+		t.Fatalf("GetPosition: %v", err)
+	}
+	if !ok {
+		t.Fatalf("position NVDA not found")
+	}
+	if detail.Ticker != "NVDA" || detail.Shares != 2 {
+		t.Fatalf("unexpected detail: %#v", detail)
+	}
+}
+
+func TestServiceUpdatesPricesAndPeaks(t *testing.T) {
+	repoInfo, err := storage.NewPortfolioRepository("memory")
+	if err != nil {
+		t.Fatalf("NewPortfolioRepository memory: %v", err)
+	}
+
+	svc := app.NewPortfolioService(repoInfo.Repository, bumpPricer{})
+
+	ctx := context.Background()
+	pos := &portfolio.Position{Ticker: "AAPL", Shares: 1, CostBasis: 100, CurrentPrice: 100}
+	pos.UpdatePrice(pos.CurrentPrice)
+	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
+		t.Fatalf("AddOrUpdatePosition: %v", err)
+	}
+
+	if err := svc.UpdateAllPrices(ctx); err != nil {
+		t.Fatalf("UpdateAllPrices: %v", err)
+	}
+
+	detail, ok, err := svc.GetPosition(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("GetPosition: %v", err)
+	}
+	if !ok {
+		t.Fatalf("position AAPL not found")
+	}
+
+	if detail.CurrentPrice != 101 {
+		t.Fatalf("CurrentPrice=%v want 101", detail.CurrentPrice)
+	}
+
+	if err := svc.RecomputeHistoricalPeaks(ctx); err != nil {
+		t.Fatalf("RecomputeHistoricalPeaks: %v", err)
+	}
+
+	detail, ok, err = svc.GetPosition(ctx, "AAPL")
+	if err != nil || !ok {
+		t.Fatalf("GetPosition after recompute: %v ok=%v", err, ok)
+	}
+	if detail.PeakValue < detail.CurrentValue {
+		t.Fatalf("PeakValue should be at least current value: peak=%v current=%v", detail.PeakValue, detail.CurrentValue)
 	}
 }
