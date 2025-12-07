@@ -25,7 +25,7 @@ func (s *PortfolioService) InitPortfolio(ctx context.Context, name string, cash 
 	if err != nil {
 		return nil, err
 	}
-	if p.Name == "" {
+	if p.Name == "" || (len(p.Positions) == 0 && p.Cash == 0) {
 		p.Name = name
 		p.Cash = cash
 		if err := s.repo.Save(ctx, p); err != nil {

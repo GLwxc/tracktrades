@@ -32,10 +32,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	repoPath := envOrDefault("PORTFOLIO_PATH", defaultRepoPath)
+	repoSpec := os.Getenv("PORTFOLIO_STORAGE")
+	if repoSpec == "" {
+		repoPath := envOrDefault("PORTFOLIO_PATH", defaultRepoPath)
+		repoSpec = fmt.Sprintf("file:%s", repoPath)
+	}
+
+	repoInfo, err := storage.NewPortfolioRepository(repoSpec)
+	if err != nil {
+		log.Fatalf("invalid repository: %v", err)
+	}
+
 	apiKey := os.Getenv("ALPHAVANTAGE_API_KEY")
 
-	repo := storage.NewFilePortfolioRepository(repoPath)
+	repo := repoInfo.Repository
 	pricer := selectPricer(apiKey)
 	svc := app.NewPortfolioService(repo, pricer)
 
@@ -47,27 +57,27 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
-	var err error
+	var cmdErr error
 	switch cmd {
 	case "metrics":
-		err = runMetrics(ctx, svc)
+		cmdErr = runMetrics(ctx, svc)
 	case "positions":
-		err = runPositions(ctx, svc)
+		cmdErr = runPositions(ctx, svc)
 	case "position":
-		err = runPosition(ctx, svc, args)
+		cmdErr = runPosition(ctx, svc, args)
 	case "add-position":
-		err = runAddPosition(ctx, svc, args)
+		cmdErr = runAddPosition(ctx, svc, args)
 	case "update-prices":
-		err = runUpdatePrices(ctx, svc, apiKey)
+		cmdErr = runUpdatePrices(ctx, svc, apiKey)
 	case "recompute-peaks":
-		err = runRecomputePeaks(ctx, svc, apiKey)
+		cmdErr = runRecomputePeaks(ctx, svc, apiKey)
 	default:
 		usage()
 		os.Exit(1)
 	}
 
-	if err != nil {
-		log.Fatalf("%s: %v", cmd, err)
+	if cmdErr != nil {
+		log.Fatalf("%s: %v", cmd, cmdErr)
 	}
 }
 
