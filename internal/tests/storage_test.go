@@ -87,6 +87,76 @@ func TestFileRepositorySpecCreatesFile(t *testing.T) {
 	}
 }
 
+func TestGzipRepositorySpecCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	storeInfo, err := storage.NewPortfolioStore("gzip:" + dir)
+	if err != nil {
+		t.Fatalf("NewPortfolioStore gzip: %v", err)
+	}
+	store := storeInfo.Store
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, "compressed", 50); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	loaded, err := store.Load(ctx, "compressed")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Cash != 50 {
+		t.Fatalf("Cash=%v want 50", loaded.Cash)
+	}
+
+	path := filepath.Join(dir, "compressed.json.gz")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("Stat(%s): %v", path, err)
+	}
+
+	names, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(names) != 1 || names[0] != "compressed" {
+		t.Fatalf("List returned %v", names)
+	}
+}
+
+func TestSQLiteRepositoryPersistsData(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "portfolios.db")
+	storeInfo, err := storage.NewPortfolioStore("sqlite:" + dsn)
+	if err != nil {
+		t.Fatalf("NewPortfolioStore sqlite: %v", err)
+	}
+	store := storeInfo.Store
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, "db", 10); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	portfolio, err := store.Load(ctx, "db")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if portfolio.Cash != 10 {
+		t.Fatalf("Cash=%v want 10", portfolio.Cash)
+	}
+
+	portfolio.Cash = 15
+	if err := store.Save(ctx, "db", portfolio); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	again, err := store.Load(ctx, "db")
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if again.Cash != 15 {
+		t.Fatalf("Cash after save=%v want 15", again.Cash)
+	}
+}
+
 func TestUnsupportedRepositorySpec(t *testing.T) {
 	if _, err := storage.NewPortfolioStore("db:postgres"); err == nil {
 		t.Fatalf("expected error for unsupported backend")
