@@ -11,27 +11,20 @@ import (
 )
 
 func TestMemoryRepositoryIsIsolated(t *testing.T) {
-	repoInfo, err := storage.NewPortfolioRepository("memory")
+	storeInfo, err := storage.NewPortfolioStore("memory")
 	if err != nil {
-		t.Fatalf("NewPortfolioRepository memory: %v", err)
+		t.Fatalf("NewPortfolioStore memory: %v", err)
 	}
 
-	repo := repoInfo.Repository
+	store := storeInfo.Store
 	ctx := context.Background()
+	if _, err := store.Create(ctx, "SessionOne", 500); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 
-	p, err := repo.Load(ctx)
+	loaded, err := store.Load(ctx, "SessionOne")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	p.Name = "SessionOne"
-	p.Cash = 500
-	if err := repo.Save(ctx, p); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	loaded, err := repo.Load(ctx)
-	if err != nil {
-		t.Fatalf("Load after save: %v", err)
 	}
 	if loaded.Name != "SessionOne" || loaded.Cash != 500 {
 		t.Fatalf("unexpected portfolio: %#v", loaded)
@@ -39,7 +32,7 @@ func TestMemoryRepositoryIsIsolated(t *testing.T) {
 
 	// Mutating the loaded portfolio should not affect persisted state until Save is called.
 	loaded.Cash = 0
-	again, err := repo.Load(ctx)
+	again, err := store.Load(ctx, "SessionOne")
 	if err != nil {
 		t.Fatalf("Load after mutation: %v", err)
 	}
@@ -52,27 +45,29 @@ func TestFileRepositorySpecCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "portfolio.json")
 
-	repoInfo, err := storage.NewPortfolioRepository("file:" + path)
+	storeInfo, err := storage.NewPortfolioStore("file:" + path)
 	if err != nil {
-		t.Fatalf("NewPortfolioRepository file: %v", err)
+		t.Fatalf("NewPortfolioStore file: %v", err)
 	}
-
-	repo := repoInfo.Repository
+	store := storeInfo.Store
 	ctx := context.Background()
 
-	p, err := repo.Load(ctx)
+	if _, err := store.Create(ctx, "persisted", 0); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	p, err := store.Load(ctx, "persisted")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	p.Name = "Persisted"
 	p.Positions["TEST"] = &portfolio.Position{Ticker: "TEST", Shares: 1, CurrentPrice: 10}
 
-	if err := repo.Save(ctx, p); err != nil {
+	if err := store.Save(ctx, "persisted", p); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(dir, "persisted.json"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -80,12 +75,12 @@ func TestFileRepositorySpecCreatesFile(t *testing.T) {
 		t.Fatalf("expected data to be written to %s", path)
 	}
 
-	loaded, err := repo.Load(ctx)
+	loaded, err := store.Load(ctx, "persisted")
 	if err != nil {
 		t.Fatalf("Load after save: %v", err)
 	}
-	if loaded.Name != "Persisted" {
-		t.Fatalf("Name=%s want Persisted", loaded.Name)
+	if loaded.Name != "persisted" {
+		t.Fatalf("Name=%s want persisted", loaded.Name)
 	}
 	if len(loaded.Positions) != 1 {
 		t.Fatalf("Positions=%d want 1", len(loaded.Positions))
@@ -93,7 +88,7 @@ func TestFileRepositorySpecCreatesFile(t *testing.T) {
 }
 
 func TestUnsupportedRepositorySpec(t *testing.T) {
-	if _, err := storage.NewPortfolioRepository("db:postgres"); err == nil {
+	if _, err := storage.NewPortfolioStore("db:postgres"); err == nil {
 		t.Fatalf("expected error for unsupported backend")
 	}
 }
