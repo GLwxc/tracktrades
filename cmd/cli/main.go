@@ -19,7 +19,6 @@ import (
 
 const (
 	defaultRepoPath   = "portfolio.json"
-	defaultName       = "My Portfolio"
 	defaultCash       = 0.0
 	defaultTimeLayout = "2006-01-02"
 )
@@ -38,21 +37,20 @@ func main() {
 		repoSpec = fmt.Sprintf("file:%s", repoPath)
 	}
 
-	repoInfo, err := storage.NewPortfolioRepository(repoSpec)
+	storeInfo, err := storage.NewPortfolioStore(repoSpec)
 	if err != nil {
 		log.Fatalf("invalid repository: %v", err)
 	}
 
 	apiKey := os.Getenv("ALPHAVANTAGE_API_KEY")
 
-	repo := repoInfo.Repository
+	portfolioName := envOrDefault("PORTFOLIO_NAME", storeInfo.DefaultPortfolio)
+
+	store := storeInfo.Store
 	pricer := selectPricer(apiKey)
-	svc := app.NewPortfolioService(repo, pricer)
+	svc := app.NewPortfolioService(store, pricer)
 
 	ctx := context.Background()
-	if _, err := svc.InitPortfolio(ctx, defaultName, defaultCash); err != nil {
-		log.Fatalf("init portfolio: %v", err)
-	}
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
@@ -60,17 +58,23 @@ func main() {
 	var cmdErr error
 	switch cmd {
 	case "metrics":
-		cmdErr = runMetrics(ctx, svc)
+		cmdErr = runMetrics(ctx, svc, portfolioName, args)
 	case "positions":
-		cmdErr = runPositions(ctx, svc)
+		cmdErr = runPositions(ctx, svc, portfolioName, args)
 	case "position":
-		cmdErr = runPosition(ctx, svc, args)
+		cmdErr = runPosition(ctx, svc, portfolioName, args)
 	case "add-position":
-		cmdErr = runAddPosition(ctx, svc, args)
+		cmdErr = runAddPosition(ctx, svc, portfolioName, args)
 	case "update-prices":
-		cmdErr = runUpdatePrices(ctx, svc, apiKey)
+		cmdErr = runUpdatePrices(ctx, svc, portfolioName, apiKey, args)
 	case "recompute-peaks":
-		cmdErr = runRecomputePeaks(ctx, svc, apiKey)
+		cmdErr = runRecomputePeaks(ctx, svc, portfolioName, apiKey, args)
+	case "create-portfolio":
+		cmdErr = runCreatePortfolio(ctx, svc, args)
+	case "list-portfolios":
+		cmdErr = runListPortfolios(ctx, svc)
+	case "remove-portfolio":
+		cmdErr = runRemovePortfolio(ctx, svc, args)
 	default:
 		usage()
 		os.Exit(1)
@@ -81,32 +85,52 @@ func main() {
 	}
 }
 
-func runMetrics(ctx context.Context, svc *app.PortfolioService) error {
-	metrics, err := svc.GetMetrics(ctx)
+func runMetrics(ctx context.Context, svc *app.PortfolioService, defaultPortfolio string, args []string) error {
+	fs := flag.NewFlagSet("metrics", flag.ExitOnError)
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
+	_ = fs.Parse(args)
+
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
+	}
+
+	metrics, err := svc.GetMetrics(ctx, *portfolioName)
 	if err != nil {
 		return err
 	}
 	return printJSON(metrics)
 }
 
-func runPositions(ctx context.Context, svc *app.PortfolioService) error {
-	positions, err := svc.ListPositions(ctx)
+func runPositions(ctx context.Context, svc *app.PortfolioService, defaultPortfolio string, args []string) error {
+	fs := flag.NewFlagSet("positions", flag.ExitOnError)
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
+	_ = fs.Parse(args)
+
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
+	}
+
+	positions, err := svc.ListPositions(ctx, *portfolioName)
 	if err != nil {
 		return err
 	}
 	return printJSON(positions)
 }
 
-func runPosition(ctx context.Context, svc *app.PortfolioService, args []string) error {
+func runPosition(ctx context.Context, svc *app.PortfolioService, defaultPortfolio string, args []string) error {
 	fs := flag.NewFlagSet("position", flag.ExitOnError)
 	ticker := fs.String("ticker", "", "Ticker symbol to query")
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
 	_ = fs.Parse(args)
 
 	if *ticker == "" {
 		return errors.New("--ticker is required")
 	}
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
+	}
 
-	detail, ok, err := svc.GetPosition(ctx, *ticker)
+	detail, ok, err := svc.GetPosition(ctx, *portfolioName, *ticker)
 	if err != nil {
 		return err
 	}
@@ -116,13 +140,14 @@ func runPosition(ctx context.Context, svc *app.PortfolioService, args []string) 
 	return printJSON(detail)
 }
 
-func runAddPosition(ctx context.Context, svc *app.PortfolioService, args []string) error {
+func runAddPosition(ctx context.Context, svc *app.PortfolioService, defaultPortfolio string, args []string) error {
 	fs := flag.NewFlagSet("add-position", flag.ExitOnError)
 	ticker := fs.String("ticker", "", "Ticker symbol (required)")
 	shares := fs.Float64("shares", 0, "Number of shares")
 	costBasis := fs.Float64("cost", 0, "Total cost basis")
 	price := fs.Float64("price", 0, "Current price")
 	entryDateStr := fs.String("entry", "", "Entry date (YYYY-MM-DD)")
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
 	_ = fs.Parse(args)
 
 	if *ticker == "" {
@@ -133,6 +158,9 @@ func runAddPosition(ctx context.Context, svc *app.PortfolioService, args []strin
 	}
 	if *price <= 0 {
 		return errors.New("--price must be greater than zero")
+	}
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
 	}
 
 	pos := &portfolio.Position{
@@ -153,7 +181,7 @@ func runAddPosition(ctx context.Context, svc *app.PortfolioService, args []strin
 	pos.PeakPrice = pos.CurrentPrice
 	pos.UpdatePrice(pos.CurrentPrice)
 
-	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
+	if err := svc.AddOrUpdatePosition(ctx, *portfolioName, pos); err != nil {
 		return err
 	}
 
@@ -161,18 +189,75 @@ func runAddPosition(ctx context.Context, svc *app.PortfolioService, args []strin
 	return nil
 }
 
-func runUpdatePrices(ctx context.Context, svc *app.PortfolioService, apiKey string) error {
+func runUpdatePrices(ctx context.Context, svc *app.PortfolioService, defaultPortfolio, apiKey string, args []string) error {
 	if err := requireAPIKey(apiKey); err != nil {
 		return err
 	}
-	return svc.UpdateAllPrices(ctx)
+	fs := flag.NewFlagSet("update-prices", flag.ExitOnError)
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
+	_ = fs.Parse(args)
+
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
+	}
+
+	return svc.UpdateAllPrices(ctx, *portfolioName)
 }
 
-func runRecomputePeaks(ctx context.Context, svc *app.PortfolioService, apiKey string) error {
+func runRecomputePeaks(ctx context.Context, svc *app.PortfolioService, defaultPortfolio, apiKey string, args []string) error {
 	if err := requireAPIKey(apiKey); err != nil {
 		return err
 	}
-	return svc.RecomputeHistoricalPeaks(ctx)
+	fs := flag.NewFlagSet("recompute-peaks", flag.ExitOnError)
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
+	_ = fs.Parse(args)
+
+	if err := requirePortfolioName(*portfolioName); err != nil {
+		return err
+	}
+
+	return svc.RecomputeHistoricalPeaks(ctx, *portfolioName)
+}
+
+func runCreatePortfolio(ctx context.Context, svc *app.PortfolioService, args []string) error {
+	fs := flag.NewFlagSet("create-portfolio", flag.ExitOnError)
+	name := fs.String("name", "", "Portfolio name")
+	cash := fs.Float64("cash", defaultCash, "Starting cash")
+	_ = fs.Parse(args)
+
+	if *name == "" {
+		return errors.New("--name is required")
+	}
+
+	_, err := svc.CreatePortfolio(ctx, *name, *cash)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("portfolio %s created\n", *name)
+	return nil
+}
+
+func runListPortfolios(ctx context.Context, svc *app.PortfolioService) error {
+	names, err := svc.ListPortfolios(ctx)
+	if err != nil {
+		return err
+	}
+	return printJSON(map[string][]string{"portfolios": names})
+}
+
+func runRemovePortfolio(ctx context.Context, svc *app.PortfolioService, args []string) error {
+	fs := flag.NewFlagSet("remove-portfolio", flag.ExitOnError)
+	name := fs.String("name", "", "Portfolio name")
+	_ = fs.Parse(args)
+
+	if *name == "" {
+		return errors.New("--name is required")
+	}
+	if err := svc.RemovePortfolio(ctx, *name); err != nil {
+		return err
+	}
+	fmt.Printf("portfolio %s removed\n", *name)
+	return nil
 }
 
 func printJSON(v any) error {
@@ -209,16 +294,26 @@ func requireAPIKey(apiKey string) error {
 	return nil
 }
 
+func requirePortfolioName(name string) error {
+	if name == "" {
+		return errors.New("portfolio name is required; pass --portfolio or set PORTFOLIO_NAME")
+	}
+	return nil
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "Portfolio CLI")
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  metrics                         Show portfolio metrics")
-	fmt.Fprintln(os.Stderr, "  positions                       List all positions")
-	fmt.Fprintln(os.Stderr, "  position --ticker TICKER        Show a single position")
-	fmt.Fprintln(os.Stderr, "  add-position --ticker T --shares N --price P [--cost C] [--entry YYYY-MM-DD]")
-	fmt.Fprintln(os.Stderr, "                                   Add or update a position")
-	fmt.Fprintln(os.Stderr, "  update-prices                   Refresh prices via AlphaVantage (requires ALPHAVANTAGE_API_KEY)")
-	fmt.Fprintln(os.Stderr, "  recompute-peaks                 Recompute historical peaks (requires ALPHAVANTAGE_API_KEY)")
+	fmt.Fprintln(os.Stderr, "  metrics --portfolio NAME                      Show portfolio metrics")
+	fmt.Fprintln(os.Stderr, "  positions --portfolio NAME                    List all positions")
+	fmt.Fprintln(os.Stderr, "  position --ticker TICKER --portfolio NAME     Show a single position")
+	fmt.Fprintln(os.Stderr, "  add-position --ticker T --shares N --price P --portfolio NAME [--cost C] [--entry YYYY-MM-DD]")
+	fmt.Fprintln(os.Stderr, "                                                Add or update a position")
+	fmt.Fprintln(os.Stderr, "  update-prices --portfolio NAME                Refresh prices via AlphaVantage (requires ALPHAVANTAGE_API_KEY)")
+	fmt.Fprintln(os.Stderr, "  recompute-peaks --portfolio NAME              Recompute historical peaks (requires ALPHAVANTAGE_API_KEY)")
+	fmt.Fprintln(os.Stderr, "  create-portfolio --name NAME [--cash AMOUNT]  Create a new portfolio")
+	fmt.Fprintln(os.Stderr, "  list-portfolios                               List existing portfolios")
+	fmt.Fprintln(os.Stderr, "  remove-portfolio --name NAME                  Delete a portfolio file")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "Environment variables:\n  PORTFOLIO_PATH (default %s)\n  ALPHAVANTAGE_API_KEY\n", defaultRepoPath)
+	fmt.Fprintf(os.Stderr, "Environment variables:\n  PORTFOLIO_PATH (default %s)\n  PORTFOLIO_NAME (used when --portfolio not provided; default derived from PORTFOLIO_PATH)\n  PORTFOLIO_STORAGE\n  ALPHAVANTAGE_API_KEY\n", defaultRepoPath)
 }

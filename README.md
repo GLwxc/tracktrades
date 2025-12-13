@@ -17,14 +17,14 @@ HTTP API, CLI, and service layer for tracking portfolio performance with clean d
    ```bash
    go run ./cmd/api
    ```
-4. Use `curl` to interact:
+4. Use `curl` to interact (set `PORTFOLIO_NAME` to pick a different portfolio file name, default `portfolio`):
    ```bash
-   curl http://localhost:8080/portfolio
-   curl http://localhost:8080/positions
-   curl -X POST http://localhost:8080/update-prices
+   curl "http://localhost:8080/portfolio?portfolio=portfolio"
+   curl "http://localhost:8080/positions?portfolio=portfolio"
+   curl -X POST "http://localhost:8080/update-prices?portfolio=portfolio"
    ```
 
-The server persists data in `portfolio.json` using the file repository adapter.
+The server persists data in `<portfolio name>.json` using the file repository adapter. Files are only created when you call the create-portfolio CLI command (or write your own creation flow); the API no longer creates them implicitly.
 
 ### CLI usage
 1. Set optional environment variables:
@@ -35,9 +35,12 @@ The server persists data in `portfolio.json` using the file repository adapter.
    go run ./cmd/cli metrics
    go run ./cmd/cli positions
    go run ./cmd/cli position --ticker NVDA
-   go run ./cmd/cli add-position --ticker NVDA --shares 10 --price 120 --cost 1000 --entry 2024-01-02
+   go run ./cmd/cli add-position --ticker NVDA --shares 10 --price 120 --cost 1200 --entry 2024-01-02
    go run ./cmd/cli update-prices
    go run ./cmd/cli recompute-peaks
+   go run ./cmd/cli create-portfolio --name swing --cash 2500
+   go run ./cmd/cli list-portfolios
+   go run ./cmd/cli metrics --portfolio swing
    ```
    Commands render JSON to stdout and exit non-zero on errors.
 

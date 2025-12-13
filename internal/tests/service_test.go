@@ -33,16 +33,16 @@ var _ ports.PriceProvider = (*nopPricer)(nil)
 var _ ports.PriceProvider = (*bumpPricer)(nil)
 
 func TestServiceAddAndPersistPosition(t *testing.T) {
-	repoInfo, err := storage.NewPortfolioRepository("memory")
+	storeInfo, err := storage.NewPortfolioStore("memory")
 	if err != nil {
-		t.Fatalf("NewPortfolioRepository memory: %v", err)
+		t.Fatalf("NewPortfolioStore memory: %v", err)
 	}
 
-	svc := app.NewPortfolioService(repoInfo.Repository, nopPricer{})
+	svc := app.NewPortfolioService(storeInfo.Store, nopPricer{})
 
 	ctx := context.Background()
-	if _, err := svc.InitPortfolio(ctx, "Test", 500); err != nil {
-		t.Fatalf("InitPortfolio: %v", err)
+	if _, err := svc.CreatePortfolio(ctx, "Test", 500); err != nil {
+		t.Fatalf("CreatePortfolio: %v", err)
 	}
 
 	pos := &portfolio.Position{
@@ -53,11 +53,11 @@ func TestServiceAddAndPersistPosition(t *testing.T) {
 	}
 	pos.UpdatePrice(pos.CurrentPrice)
 
-	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
+	if err := svc.AddOrUpdatePosition(ctx, "Test", pos); err != nil {
 		t.Fatalf("AddOrUpdatePosition: %v", err)
 	}
 
-	metrics, err := svc.GetMetrics(ctx)
+	metrics, err := svc.GetMetrics(ctx, "Test")
 	if err != nil {
 		t.Fatalf("GetMetrics: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestServiceAddAndPersistPosition(t *testing.T) {
 		t.Fatalf("TotalValue=%v want %v", metrics.TotalValue, wantTotal)
 	}
 
-	detail, ok, err := svc.GetPosition(ctx, "NVDA")
+	detail, ok, err := svc.GetPosition(ctx, "Test", "NVDA")
 	if err != nil {
 		t.Fatalf("GetPosition: %v", err)
 	}
@@ -80,25 +80,28 @@ func TestServiceAddAndPersistPosition(t *testing.T) {
 }
 
 func TestServiceUpdatesPricesAndPeaks(t *testing.T) {
-	repoInfo, err := storage.NewPortfolioRepository("memory")
+	storeInfo, err := storage.NewPortfolioStore("memory")
 	if err != nil {
-		t.Fatalf("NewPortfolioRepository memory: %v", err)
+		t.Fatalf("NewPortfolioStore memory: %v", err)
 	}
 
-	svc := app.NewPortfolioService(repoInfo.Repository, bumpPricer{})
+	svc := app.NewPortfolioService(storeInfo.Store, bumpPricer{})
 
 	ctx := context.Background()
+	if _, err := svc.CreatePortfolio(ctx, "Test", 0); err != nil {
+		t.Fatalf("CreatePortfolio: %v", err)
+	}
 	pos := &portfolio.Position{Ticker: "AAPL", Shares: 1, CostBasis: 100, CurrentPrice: 100}
 	pos.UpdatePrice(pos.CurrentPrice)
-	if err := svc.AddOrUpdatePosition(ctx, pos); err != nil {
+	if err := svc.AddOrUpdatePosition(ctx, "Test", pos); err != nil {
 		t.Fatalf("AddOrUpdatePosition: %v", err)
 	}
 
-	if err := svc.UpdateAllPrices(ctx); err != nil {
+	if err := svc.UpdateAllPrices(ctx, "Test"); err != nil {
 		t.Fatalf("UpdateAllPrices: %v", err)
 	}
 
-	detail, ok, err := svc.GetPosition(ctx, "AAPL")
+	detail, ok, err := svc.GetPosition(ctx, "Test", "AAPL")
 	if err != nil {
 		t.Fatalf("GetPosition: %v", err)
 	}
@@ -110,11 +113,11 @@ func TestServiceUpdatesPricesAndPeaks(t *testing.T) {
 		t.Fatalf("CurrentPrice=%v want 101", detail.CurrentPrice)
 	}
 
-	if err := svc.RecomputeHistoricalPeaks(ctx); err != nil {
+	if err := svc.RecomputeHistoricalPeaks(ctx, "Test"); err != nil {
 		t.Fatalf("RecomputeHistoricalPeaks: %v", err)
 	}
 
-	detail, ok, err = svc.GetPosition(ctx, "AAPL")
+	detail, ok, err = svc.GetPosition(ctx, "Test", "AAPL")
 	if err != nil || !ok {
 		t.Fatalf("GetPosition after recompute: %v ok=%v", err, ok)
 	}
