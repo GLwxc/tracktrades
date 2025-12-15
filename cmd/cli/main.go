@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"tracktrades/internal/adapters/alphavantage"
@@ -75,6 +76,8 @@ func main() {
 		cmdErr = runListPortfolios(ctx, svc)
 	case "remove-portfolio":
 		cmdErr = runRemovePortfolio(ctx, svc, args)
+	case "plot-history":
+		cmdErr = runPlotHistory(ctx, svc, portfolioName, args)
 	default:
 		usage()
 		os.Exit(1)
@@ -238,10 +241,113 @@ func runRemovePortfolio(ctx context.Context, svc *app.PortfolioService, args []s
 	return nil
 }
 
+func runPlotHistory(ctx context.Context, svc *app.PortfolioService, defaultPortfolio string, args []string) error {
+	fs := flag.NewFlagSet("plot-history", flag.ExitOnError)
+	tickers := fs.String("tickers", "", "Comma separated list of tickers (default all positions)")
+	days := fs.Int("days", 0, "Limit to the most recent N days")
+	width := fs.Int("width", 80, "Plot width in characters")
+	portfolioName := fs.String("portfolio", defaultPortfolio, "Portfolio to target")
+	_ = fs.Parse(args)
+
+	var filtered []string
+	if *tickers != "" {
+		for _, t := range strings.Split(*tickers, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				filtered = append(filtered, t)
+			}
+		}
+	}
+
+	history, err := svc.PortfolioHistory(ctx, *portfolioName, filtered)
+	if err != nil {
+		return err
+	}
+	if len(history) == 0 {
+		return errors.New("no history returned")
+	}
+
+	if *days > 0 && *days < len(history) {
+		history = history[len(history)-*days:]
+	}
+
+	values := make([]float64, len(history))
+	labels := make([]string, len(history))
+	for i, pt := range history {
+		values[i] = pt.Value
+		labels[i] = pt.Date.Format("2006-01-02")
+	}
+
+	graph := renderSparkline(values, *width)
+	fmt.Println(graph)
+	fmt.Printf("%s -> %s\n", labels[0], labels[len(labels)-1])
+
+	scope := "all positions"
+	if len(filtered) > 0 {
+		scope = strings.Join(filtered, ", ")
+	}
+	fmt.Printf("Plotted %d points for %s (cash included)\n", len(values), scope)
+	return nil
+}
+
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+func renderSparkline(values []float64, width int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	sampled := values
+	if width > 0 && width < len(values) {
+		sampled = downsample(values, width)
+	}
+
+	minV, maxV := sampled[0], sampled[0]
+	for _, v := range sampled {
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	var sb strings.Builder
+	for _, v := range sampled {
+		idx := len(blocks) - 1
+		if maxV > minV {
+			ratio := (v - minV) / (maxV - minV)
+			idx = int(ratio * float64(len(blocks)-1))
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(blocks) {
+			idx = len(blocks) - 1
+		}
+		sb.WriteRune(blocks[idx])
+	}
+	return sb.String()
+}
+
+func downsample(values []float64, width int) []float64 {
+	if width <= 0 || width >= len(values) {
+		return values
+	}
+	step := float64(len(values)) / float64(width)
+	res := make([]float64, width)
+	for i := 0; i < width; i++ {
+		idx := int(float64(i) * step)
+		if idx >= len(values) {
+			idx = len(values) - 1
+		}
+		res[i] = values[idx]
+	}
+	return res
 }
 
 func envOrDefault(key, def string) string {
@@ -256,6 +362,9 @@ type noopPricer struct{}
 func (noopPricer) UpdatePrice(ctx context.Context, pos *portfolio.Position) error { return nil }
 func (noopPricer) ComputeHistoricalPeak(ctx context.Context, pos *portfolio.Position) error {
 	return nil
+}
+func (noopPricer) PriceHistory(ctx context.Context, pos *portfolio.Position) ([]portfolio.PricePoint, error) {
+	return nil, errors.New("history unavailable without ALPHAVANTAGE_API_KEY")
 }
 
 func selectPricer(apiKey string) ports.PriceProvider {
@@ -285,6 +394,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  create-portfolio --name NAME [--cash AMOUNT]  Create a new portfolio")
 	fmt.Fprintln(os.Stderr, "  list-portfolios                               List existing portfolios")
 	fmt.Fprintln(os.Stderr, "  remove-portfolio --name NAME                  Delete a portfolio file")
+	fmt.Fprintln(os.Stderr, "  plot-history [--tickers T1,T2] [--days N]     Plot historical portfolio value as ASCII graph")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "Environment variables:\n  PORTFOLIO_PATH (default %s)\n  PORTFOLIO_NAME (default derived from PORTFOLIO_PATH)\n  ALPHAVANTAGE_API_KEY\n", defaultRepoPath)
 }

@@ -17,4 +17,5 @@ type PortfolioStore interface {
 type PriceProvider interface {
 	UpdatePrice(ctx context.Context, pos *portfolio.Position) error
 	ComputeHistoricalPeak(ctx context.Context, pos *portfolio.Position) error
+	PriceHistory(ctx context.Context, pos *portfolio.Position) ([]portfolio.PricePoint, error)
 }

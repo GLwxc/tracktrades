@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"time"
 
 	"tracktrades/internal/domain/portfolio"
@@ -112,4 +114,58 @@ func (s *PortfolioService) StartPriceUpdater(ctx context.Context, name string, i
 	}()
 
 	return cancel
+}
+
+// PortfolioHistory fetches historical prices for the requested tickers (or all positions
+// when tickers is empty) and aggregates their total value by day. Cash is added to each
+// day's total so the series reflects full portfolio value.
+func (s *PortfolioService) PortfolioHistory(ctx context.Context, name string, tickers []string) ([]portfolio.ValuePoint, error) {
+	p, err := s.store.Load(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	selected := p.Positions
+	if len(tickers) > 0 {
+		selected = make(map[string]*portfolio.Position, len(tickers))
+		for _, t := range tickers {
+			pos, ok := p.Positions[t]
+			if !ok {
+				return nil, fmt.Errorf("position %s not found", t)
+			}
+			selected[t] = pos
+		}
+	}
+
+	totals := make(map[time.Time]float64)
+	for _, pos := range selected {
+		history, err := s.pricer.PriceHistory(ctx, pos)
+		if err != nil {
+			return nil, err
+		}
+		for _, pt := range history {
+			totals[pt.Date] += pt.Price * pos.Shares
+		}
+	}
+
+	if len(totals) == 0 {
+		return nil, fmt.Errorf("no historical data available")
+	}
+
+	// add cash to every aggregated date
+	for d := range totals {
+		totals[d] += p.Cash
+	}
+
+	dates := make([]time.Time, 0, len(totals))
+	for d := range totals {
+		dates = append(dates, d)
+	}
+	sort.Slice(dates, func(i, j int) bool { return dates[i].Before(dates[j]) })
+
+	points := make([]portfolio.ValuePoint, 0, len(dates))
+	for _, d := range dates {
+		points = append(points, portfolio.ValuePoint{Date: d, Value: totals[d]})
+	}
+	return points, nil
 }
