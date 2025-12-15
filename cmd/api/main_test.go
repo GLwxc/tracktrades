@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"tracktrades/internal/adapters/storage"
 	"tracktrades/internal/app"
@@ -17,6 +18,9 @@ type testPricer struct{}
 
 func (testPricer) UpdatePrice(ctx context.Context, p *portfolio.Position) error           { return nil }
 func (testPricer) ComputeHistoricalPeak(ctx context.Context, p *portfolio.Position) error { return nil }
+func (testPricer) PriceHistory(ctx context.Context, p *portfolio.Position) ([]portfolio.PricePoint, error) {
+	return []portfolio.PricePoint{{Date: time.Now(), Price: p.CurrentPrice}}, nil
+}
 
 func newTestService(t *testing.T) (*app.PortfolioService, string) {
 	t.Helper()
